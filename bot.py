@@ -1,21 +1,39 @@
 import asyncio
 import logging
-import time
-from datetime import datetime
+import threading
+from flask import Flask
+import os
 from news_service import NewsService
 from gemini_service import GeminiService
 from image_service import ImageService
 from telegram_service import TelegramService
-from keep_alive import start_keep_alive, start_ping_loop
 from config import POST_INTERVAL
+
+# Keep-alive сервер
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Telegram News Bot is running!"
+
+@app.route('/health')
+def health():
+    return {"status": "ok", "service": "telegram-news-bot"}
+
+def run_flask():
+    port = int(os.getenv('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def start_keep_alive():
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    logging.info("✅ Keep-alive server started")
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 class NewsBot:
@@ -27,24 +45,19 @@ class NewsBot:
         self.is_running = True
     
     async def initialize(self):
-        """Инициализация сервисов"""
         await self.news_service.init_session()
         logging.info("✅ All services initialized")
     
     async def create_news_post(self, news_item):
-        """Создание поста с контентом"""
         try:
-            # Генерируем описание через Gemini
             summary = await self.gemini_service.generate_summary(
                 news_item['title'], 
                 news_item['description']
             )
             
             if not summary:
-                # Fallback описание
                 summary = news_item['description'][:200] + "..." if news_item['description'] else "Интересная IT-новость. Читайте подробнее по ссылке."
             
-            # Генерируем изображение
             image_data = await self.image_service.generate_tech_image(news_item['title'])
             
             return {
@@ -59,11 +72,9 @@ class NewsBot:
             return None
     
     async def post_news_cycle(self):
-        """Один цикл публикации новости"""
         try:
             logging.info("🔄 Starting news cycle...")
             
-            # Получаем новости
             all_news = await self.news_service.fetch_news()
             logging.info(f"📰 Found {len(all_news)} news items")
             
@@ -71,7 +82,6 @@ class NewsBot:
                 logging.warning("❌ No news found")
                 return False
             
-            # Получаем свежие новости
             fresh_news = self.news_service.get_fresh_news(all_news)
             logging.info(f"🆕 Fresh news: {len(fresh_news)} items")
             
@@ -79,15 +89,12 @@ class NewsBot:
                 logging.info("ℹ️ No fresh news to post")
                 return False
             
-            # Выбираем случайную новость
-            selected_news = fresh_news[0]  # Берем самую свежую
+            selected_news = fresh_news[0]
             logging.info(f"📝 Selected: {selected_news['title'][:50]}...")
             
-            # Создаем контент для поста
             post_data = await self.create_news_post(selected_news)
             
             if post_data:
-                # Публикуем в Telegram
                 success = await self.telegram_service.send_post(
                     title=post_data['title'],
                     summary=post_data['summary'],
@@ -111,12 +118,7 @@ class NewsBot:
             return False
     
     async def run(self):
-        """Основной цикл бота"""
         await self.initialize()
-        
-        # Запускаем keep-alive
-        start_keep_alive()
-        start_ping_loop()
         
         logging.info("🤖 News Bot started successfully!")
         logging.info(f"⏰ Post interval: {POST_INTERVAL} seconds")
@@ -131,12 +133,10 @@ class NewsBot:
                 success = await self.post_news_cycle()
                 
                 if success:
-                    next_post = datetime.now().timestamp() + POST_INTERVAL
-                    logging.info(f"✅ Cycle completed. Next post at: {datetime.fromtimestamp(next_post).strftime('%H:%M %d.%m.%Y')}")
+                    logging.info("✅ Cycle completed successfully")
                 else:
                     logging.warning("⚠️ Cycle completed with issues")
                 
-                # Ждем перед следующим циклом
                 logging.info(f"💤 Waiting {POST_INTERVAL} seconds...")
                 await asyncio.sleep(POST_INTERVAL)
                 
@@ -146,14 +146,15 @@ class NewsBot:
                 await asyncio.sleep(60)
     
     async def stop(self):
-        """Остановка бота"""
         self.is_running = False
         await self.news_service.close()
         logging.info("🛑 Bot stopped")
 
 async def main():
-    bot = NewsBot()
+    # Запускаем keep-alive сервер
+    start_keep_alive()
     
+    bot = NewsBot()
     try:
         await bot.run()
     except KeyboardInterrupt:
@@ -164,5 +165,4 @@ async def main():
         await bot.stop()
 
 if __name__ == "__main__":
-    # Запуск бота
     asyncio.run(main())
